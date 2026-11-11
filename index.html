@@ -1,0 +1,1965 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Inside cbl-gdb: How GDB Learns to Speak COBOL</title>
+
+  <!-- Google Fonts: Bricolage Grotesque · DM Sans · JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700;12..96,800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400;1,9..40,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="styles.css">
+
+  <!--
+    CUSTOMIZE PER COURSE — change only the three accent variables below.
+    Options:
+      vermillion  #D94F30 / #C4432A / #FDEEE9 / #E8836C  (default)
+      coral       #E06B56 / #C85A47 / #FDECEA / #E89585
+      teal        #2A7B9B / #1F6280 / #E4F2F7 / #5A9DB8
+      amber       #D4A843 / #BF9530 / #FDF5E0 / #E0C070
+      forest      #2D8B55 / #226B41 / #E8F5EE / #5AAD7A
+  -->
+  <style>
+    :root {
+      --color-accent:       #2A7B9B;
+      --color-accent-hover: #1F6280;
+      --color-accent-light: #E4F2F7;
+      --color-accent-muted: #5A9DB8;
+    }
+    /* Language switch (EN / DE) */
+    .nav-right { display: flex; align-items: center; gap: var(--space-4); }
+    .lang-switch {
+      display: inline-flex;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-full);
+      overflow: hidden;
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .lang-opt {
+      padding: 3px 10px;
+      color: var(--color-text-secondary);
+      text-decoration: none;
+      letter-spacing: 0.05em;
+      transition: background var(--duration-fast), color var(--duration-fast);
+    }
+    .lang-opt:hover { color: var(--color-accent); }
+    .lang-opt.active { background: var(--color-accent); color: white; cursor: default; }
+  </style>
+
+  <script src="main.js" defer></script>
+  <script>
+    // Language switch: stay on the module you are reading.
+    document.addEventListener('click', function (e) {
+      var link = e.target.closest ? e.target.closest('.lang-opt') : null;
+      if (!link) return;
+      if (link.classList.contains('active')) { e.preventDefault(); return; }
+      var dot = document.querySelector('.nav-dot.active');
+      if (dot) { e.preventDefault(); location.href = link.getAttribute('href') + '#' + dot.dataset.target; }
+    });
+  </script>
+</head>
+<body>
+
+  <nav class="nav" id="nav">
+    <div class="progress-bar" id="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+    <div class="nav-inner">
+      <span class="nav-title">Inside cbl-gdb: How GDB Learns to Speak COBOL</span>
+      <div class="nav-right">
+        <div class="nav-dots" id="nav-dots" role="tablist">
+          <!--
+            One <button> per module. Replace MODULE_N_NAME with the actual module title.
+  
+            <button class="nav-dot" data-target="module-1" data-tooltip="MODULE_1_NAME" role="tab" aria-label="Module 1: MODULE_1_NAME"></button>
+            <button class="nav-dot" data-target="module-2" data-tooltip="MODULE_2_NAME" role="tab" aria-label="Module 2: MODULE_2_NAME"></button>
+            ...
+          -->
+          <button class="nav-dot" data-target="module-1" data-tooltip="One Word Changes Everything" role="tab" aria-label="Module 1: One Word Changes Everything"></button>
+          <button class="nav-dot" data-target="module-2" data-tooltip="Meet the Cast" role="tab" aria-label="Module 2: Meet the Cast"></button>
+          <button class="nav-dot" data-target="module-3" data-tooltip="The Road Trip from COBOL to Machine" role="tab" aria-label="Module 3: The Road Trip from COBOL to Machine"></button>
+          <button class="nav-dot" data-target="module-4" data-tooltip="Inside the Debugger" role="tab" aria-label="Module 4: Inside the Debugger"></button>
+          <button class="nav-dot" data-target="module-5" data-tooltip="When Things Break" role="tab" aria-label="Module 5: When Things Break"></button>
+        </div>
+        <div class="lang-switch" role="group" aria-label="Language">
+          <a class="lang-opt active" href="index.html" lang="en" hreflang="en" aria-current="true">EN</a>
+          <a class="lang-opt" href="index.de.html" lang="de" hreflang="de">DE</a>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <main id="main">
+    <!-- modules/*.html content is assembled here by build.sh -->
+<section class="module" id="module-1" style="background: var(--color-bg-warm)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">01</span>
+      <h1 class="module-title">One Word Changes Everything</h1>
+      <p class="module-subtitle">What cbl-gdb does, and what really happens when you type <code>cobcd</code> instead of <code>cobc</code>.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Your program gets translated behind your back</h2>
+        <p><span class="term" data-definition="COBOL is a programming language from 1959 that still runs a huge share of the world's banking, payroll and insurance systems. It reads almost like English: ADD 1 TO COUNTER.">COBOL</span> is the language behind most of the world's banks and payrolls. <span class="term" data-definition="GnuCOBOL is a free, open-source COBOL compiler. Its command-line name is 'cobc'. cbl-gdb is an add-on for it.">GnuCOBOL</span> is a free <span class="term" data-definition="A compiler is a program that translates the code a human wrote into the raw instructions a computer chip can run. You write source code; the compiler produces a runnable program.">compiler</span> for it, and it has a quirk: it never turns your COBOL straight into a program. It first translates it into <span class="term" data-definition="C is a much lower-level programming language from the 1970s. Almost every computer has an excellent C compiler, so many languages translate themselves into C first and let that compiler do the hard part.">C</span>, and lets a C compiler finish the job.</p>
+
+        <div class="flow-steps">
+          <div class="flow-step">
+            <div class="flow-step-num">1</div>
+            <p><strong>prog.cbl</strong><br>The COBOL you wrote</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">2</div>
+            <p><strong>prog.c</strong><br>C that no human wrote</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">3</div>
+            <p><strong>prog</strong><br>The runnable program</p>
+          </div>
+        </div>
+
+        <p style="margin-top: var(--space-8)">That is fine until something goes wrong and you open a <span class="term" data-definition="A debugger is a tool that lets you pause a running program, step through it one line at a time, and look at the values stored in its variables. It's how you find out what the program is ACTUALLY doing.">debugger</span>. The standard one, <span class="term" data-definition="GDB (the GNU Debugger) is the standard free debugger on Linux. It was built for C-family languages and knows nothing about COBOL on its own.">GDB</span>, only sees step 2. It shows you the machine-written C, not your COBOL.</p>
+
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:var(--space-4); margin: var(--space-6) 0;">
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-5)">
+            <h4 class="pattern-title">What you wrote</h4>
+            <p class="pattern-desc" style="font-family: var(--font-mono)">10 datyr PIC 9(4).</p>
+            <p class="pattern-desc">A four-digit year, called <strong>datyr</strong>.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+            <h4 class="pattern-title">What GDB sees</h4>
+            <p class="pattern-desc" style="font-family: var(--font-mono)">b_15 + 17</p>
+            <p class="pattern-desc">Four bytes, starting 17 bytes into a blob called <strong>b_15</strong>.</p>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🎬</div>
+          <div class="callout-content">
+            <strong class="callout-title">Think of it like a dubbed film</strong>
+            <p>You wrote the script in one language. The film was dubbed into another, and the only transcript the projectionist has is the dubbed one. cbl-gdb adds subtitles in your original language.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The fix is one extra letter</h2>
+        <p>You do not learn a new workflow. Wherever you would have typed <code>cobc</code>, you type <code>cobcd</code> (the "d" is for debugging). Then you open the result in GDB as usual.</p>
+
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:var(--space-4); margin: var(--space-6) 0;">
+          <div class="translation-code" style="border-radius: var(--radius-md)">
+            <span class="translation-label">Before</span>
+            <pre><code><span class="code-comment"># ordinary compile</span>
+<span class="code-function">cobc</span> -x prog.cbl</code></pre>
+          </div>
+          <div class="translation-code" style="border-radius: var(--radius-md)">
+            <span class="translation-label">After</span>
+            <pre><code><span class="code-comment"># debuggable compile</span>
+<span class="code-function">cobcd</span> -x prog.cbl
+<span class="code-function">gdb</span> ./prog</code></pre>
+          </div>
+        </div>
+
+        <p>Inside GDB you now have new commands that understand COBOL names. This is real output from the project's own test suite, after typing <code>cprint *</code> ("show me every variable"):</p>
+
+        <div class="translation-code" style="border-radius: var(--radius-md); margin: var(--space-6) 0;">
+          <span class="translation-label">GDB</span>
+          <pre><code><span class="code-keyword">(gdb)</span> cprint/v0 *
+<span class="code-number">12</span> : 01 PEANUTS  : <span class="code-string">' ' &lt;repeats 63 times&gt;, "123456789"</span>
+<span class="code-number">13</span> : 02 FILLER/PEANUTS  : <span class="code-string">' ' &lt;repeats 63 times&gt;</span>
+<span class="code-number">14</span> : 02 NAME-FIRST/PEANUTS  : <span class="code-number">123.456789</span></code></pre>
+        </div>
+
+        <p>Line 14 is the point. In memory that value is just the characters <code>123456789</code>. The debugger put the decimal point in the right place because it knows how the COBOL declared that field.</p>
+      </section>
+
+      <!-- SCREEN 3 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Your new vocabulary inside GDB</h2>
+        <p>cbl-gdb adds a family of commands, all starting with "c" for COBOL. These six cover most of a debugging session.</p>
+
+        <div class="pattern-cards stagger-children">
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-1)">
+            <div class="pattern-icon" style="background: var(--color-actor-1)">🔎</div>
+            <h4 class="pattern-title">cprint</h4>
+            <p class="pattern-desc">Show a variable by its COBOL name. <code>cprint VAR="x"</code> changes it.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-2)">
+            <div class="pattern-icon" style="background: var(--color-actor-2)">✋</div>
+            <h4 class="pattern-title">cbreak</h4>
+            <p class="pattern-desc">Set a <span class="term" data-definition="A breakpoint is a marker you place on a line of code. When the running program reaches that line, it freezes so you can look around.">breakpoint</span> on a line, a section, or a whole program.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-3)">
+            <div class="pattern-icon" style="background: var(--color-actor-3)">👁️</div>
+            <h4 class="pattern-title">cwatch</h4>
+            <p class="pattern-desc">Set a <span class="term" data-definition="A watchpoint pauses the program the moment a particular variable changes, wherever in the code that happens. Perfect for 'who keeps overwriting this value?'">watchpoint</span>: pause the instant a variable changes.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-4)">
+            <div class="pattern-icon" style="background: var(--color-actor-4)">⏭️</div>
+            <h4 class="pattern-title">cnext</h4>
+            <p class="pattern-desc">Step to the next COBOL line, stepping over a <code>PERFORM</code> instead of diving into it.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-5)">
+            <div class="pattern-icon" style="background: var(--color-actor-5)">🧭</div>
+            <h4 class="pattern-title">cbacktrace</h4>
+            <p class="pattern-desc">A <span class="term" data-definition="A backtrace (or stack trace) is the list of 'who called whom' that led to the current line. It answers: how did the program get here?">backtrace</span> with the non-COBOL plumbing filtered out.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-accent)">
+            <div class="pattern-icon" style="background: var(--color-accent)">▶️</div>
+            <h4 class="pattern-title">cstart</h4>
+            <p class="pattern-desc">(Re)start the program and stop at the first COBOL statement.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">COBOL in thirty seconds</h2>
+        <p>You will see COBOL snippets throughout this course. Here is one paragraph from the sample program that ships with cbl-gdb. It reads records from one file, fixes a date, and writes them to another.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">optfde01.cbl</span>
+            <pre><code><span class="code-line">       <span class="code-function">02-process</span>.</span><span class="code-line">          <span class="code-keyword">MOVE</span> input-record <span class="code-keyword">TO</span> oeit.</span><span class="code-line">          <span class="code-keyword">PERFORM</span> <span class="code-function">50-fix-date</span>.</span><span class="code-line">          <span class="code-keyword">MOVE</span> oeit <span class="code-keyword">TO</span> output-record.</span><span class="code-line">          <span class="code-keyword">WRITE</span> output-record.</span><span class="code-line">          <span class="code-keyword">ADD</span> <span class="code-number">1</span> <span class="code-keyword">TO</span> custmas-ctr.</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">This is a named block of steps called "02-process". COBOL calls it a paragraph.</p>
+              <p class="tl">Copy the line we just read from the file into a working area called oeit.</p>
+              <p class="tl">Go run the "50-fix-date" paragraph, then come back here.</p>
+              <p class="tl">Copy the fixed-up working area into the outgoing record.</p>
+              <p class="tl">Write that record to the output file.</p>
+              <p class="tl">Count it: add one to the "records modified" counter.</p>
+            </div>
+          </div>
+        </div>
+
+        <p>When you pause on that last line, the natural question is "what is <code>custmas-ctr</code> right now?" Everything cbl-gdb does exists so that <code>cprint custmas-ctr</code> can answer it.</p>
+      </section>
+
+      <!-- SCREEN 5 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">What happened in the second after you pressed Enter</h2>
+        <p><code>cobcd</code> looks like a compiler, but it is a <span class="term" data-definition="A wrapper is a small program that stands in for another program. It accepts the same instructions, passes them along, and quietly adds extra steps before or after. Useful phrase for AI: 'write a wrapper script around X instead of modifying X'.">wrapper</span>: it hands the real work to other tools and slips in two extra steps of its own. The rest of this course unpacks this list.</p>
+
+        <div class="step-cards">
+          <div class="step-card">
+            <div class="step-num">1</div>
+            <div class="step-body">
+              <strong>cobcd asks the real compiler for its plan</strong>
+              <p>It runs <code>cobc</code> in a "tell me what you would do, but don't do it" mode.</p>
+            </div>
+          </div>
+          <div class="step-card">
+            <div class="step-num">2</div>
+            <div class="step-body">
+              <strong>COBOL becomes C</strong>
+              <p>GnuCOBOL does its usual translation and leaves notes about every variable in the C file.</p>
+            </div>
+          </div>
+          <div class="step-card">
+            <div class="step-num">3</div>
+            <div class="step-body">
+              <strong>Extra step: a who's-who list is stapled on</strong>
+              <p>A helper reads those notes and appends a compact table of every COBOL variable to the C file.</p>
+            </div>
+          </div>
+          <div class="step-card">
+            <div class="step-num">4</div>
+            <div class="step-body">
+              <strong>Extra step: the line numbers are corrected</strong>
+              <p>A second helper edits the half-compiled program so "line 42" means line 42 of your <code>.cbl</code>, not of the C.</p>
+            </div>
+          </div>
+          <div class="step-card">
+            <div class="step-num">5</div>
+            <div class="step-body">
+              <strong>The program is finished as normal</strong>
+              <p>The result runs exactly like an ordinary build. It just carries extra luggage.</p>
+            </div>
+          </div>
+          <div class="step-card">
+            <div class="step-num">6</div>
+            <div class="step-body">
+              <strong>Later, GDB opens the luggage</strong>
+              <p>When you debug, GDB loads a <span class="term" data-definition="Python is a popular, readable programming language. GDB lets you extend it with Python scripts, which is how cbl-gdb adds its new commands.">Python</span> script that reads the who's-who list and provides <code>cprint</code> and friends.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Key insight: wrap it, don't rewrite it</strong>
+            <p>cbl-gdb never changes GnuCOBOL or GDB. It wraps one and plugs into the other. When you ask an AI to add a capability to a tool you don't own, "wrap it" or "write a plugin for it" is usually the safer request than "modify it".</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- QUIZ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your understanding</h2>
+        <div class="quiz-container" id="quiz-module1">
+
+          <div class="quiz-question-block"
+               data-correct="b"
+               data-explanation-right="The COBOL knowledge is added at build time. A program built with plain cobc carries no who's-who list, so there is nothing for cprint to read. Rebuild with cobcd."
+               data-explanation-wrong="Think about WHEN the extra information gets added. It is stapled on during the build, by cobcd. A program built with plain cobc never got it.">
+            <h3 class="quiz-question">A colleague builds with <code>cobc -x payroll.cbl</code>, opens the result in GDB, and <code>cprint TOTAL-PAY</code> finds nothing. On your machine the same steps work. What do you check first?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Whether TOTAL-PAY is spelled with a hyphen, since GDB dislikes hyphens</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Whether they built with <code>cobc</code> instead of <code>cobcd</code></span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Whether the COBOL program has a bug in its arithmetic</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="c"
+               data-explanation-right="That is the cbl-gdb approach: leave the compiler alone, wrap it, and add steps around it. A wrapper survives compiler upgrades far better than a private modified copy."
+               data-explanation-wrong="Modifying or forking someone else's compiler means re-doing your changes every time it updates. cbl-gdb shows the lighter option: a wrapper that calls the untouched compiler and adds steps around it.">
+            <h3 class="quiz-question">Your team wants every build to also produce a report of which data files each program touches. An AI assistant proposes editing GnuCOBOL's source code to add it. Based on how cbl-gdb is built, what would you steer it toward?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Agree, the compiler is the only place this can live</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Copy GnuCOBOL into your own project and maintain a private version</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>A wrapper script that calls the normal compiler, then runs an extra step on its output</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="a"
+               data-explanation-right="Exactly. GDB is looking at the middle layer, the generated C, where your fields have machine-made names. Seeing b_ and f_ names is your cue that you are using a plain GDB command where a c-command would serve you better."
+               data-explanation-wrong="Nothing is corrupted. Those are the names the generated C uses for your COBOL fields. Plain GDB commands look at that C layer; the c-commands translate back to COBOL names.">
+            <h3 class="quiz-question">While debugging, you use GDB's ordinary <code>info variables</code> and get a screen full of names like <code>b_8</code>, <code>f_12</code> and <code>a_3</code>. What are you looking at?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The machine-written C layer that sits between your COBOL and the final program</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>A corrupted build that needs to be recompiled</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Variables belonging to GDB itself</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module1')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module1')">Try Again</button>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>
+<section class="module" id="module-2" style="background: var(--color-bg)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">02</span>
+      <h1 class="module-title">Meet the Cast</h1>
+      <p class="module-subtitle">Five small programs, four borrowed tools, and exactly who is responsible for what.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">A crew of specialists</h2>
+        <p>cbl-gdb is not one program. It is run like a heist crew: one planner who talks to the client, and a handful of specialists who each do a single job well and never meet the client at all.</p>
+
+        <div class="icon-rows stagger-children">
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-1)">🎩</div>
+            <div>
+              <strong>cobcd, the Planner</strong>
+              <p>The only one you ever type. A Python <span class="term" data-definition="A script is a program stored as readable text and run directly, without a separate compile step. Scripts are ideal for 'glue' work: calling other programs in the right order.">script</span> that decides the order of work, calls everyone else, and cleans up afterwards.</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-2)">🗺️</div>
+            <div>
+              <strong>cobcd-st, the Cartographer</strong>
+              <p>"st" is for <span class="term" data-definition="A symbol table is a lookup list that maps human-readable names (like CUSTMAS-CTR) to where that thing actually lives in the program's memory. Debuggers depend on it.">symbol table</span>. Reads the generated C and draws the map of every COBOL variable: name, location, size, type.</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-3)">✂️</div>
+            <div>
+              <strong>cobcd-sfix, the Editor</strong>
+              <p>"sfix" means "fix the .s file". It edits the <span class="term" data-definition="Assembly is a human-readable listing of the exact instructions a computer chip will run. It's the last stop before the code becomes pure binary. Assembly files usually end in .s">assembly</span> so every instruction is credited to a line of your COBOL rather than a line of C.</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-4)">🗣️</div>
+            <div>
+              <strong>cobcd.py, the Interpreter</strong>
+              <p>About 8,400 lines of Python that live inside GDB during a debug session. It provides <code>cprint</code>, <code>cbreak</code>, <code>cwatch</code> and the rest.</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-5)">🚪</div>
+            <div>
+              <strong>cobcd-rw, the Bouncer</strong>
+              <p>"rw" is for <span class="term" data-definition="Reserved words are the words a programming language keeps for itself, like MOVE, ADD and PERFORM in COBOL. You can't use them as variable names.">reserved words</span>. Hand it a few lines of COBOL and it turns away every word that belongs to the language, leaving only possible variable names.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Insiders and outsiders</h2>
+        <p>The crew leans heavily on tools it did not write. Knowing which is which is the single most useful debugging habit: when something breaks, the first question is "ours or theirs?" Click any box.</p>
+
+        <div class="arch-diagram">
+          <div class="arch-zone">
+            <h4 class="arch-zone-label">cbl-gdb (the code in this project)</h4>
+            <div class="arch-component" data-desc="cobcd: the wrapper script you type instead of cobc. It runs at BUILD time, calls the real compiler, and inserts cobcd-st and cobcd-sfix into the process.">
+              <div class="arch-icon">🎩</div>
+              <span>cobcd</span>
+            </div>
+            <div class="arch-component" data-desc="cobcd-st: runs at BUILD time. Reads the C that GnuCOBOL generated, collects every COBOL variable, and appends that list to the end of the C file as one long piece of text.">
+              <div class="arch-icon">🗺️</div>
+              <span>cobcd-st</span>
+            </div>
+            <div class="arch-component" data-desc="cobcd-sfix: runs at BUILD time. Edits the assembly file so the line-number records point at your .cbl source instead of the generated .c and .h files.">
+              <div class="arch-icon">✂️</div>
+              <span>cobcd-sfix</span>
+            </div>
+            <div class="arch-component" data-desc="cobcd.py: runs at DEBUG time, inside GDB. Reads the variable list that cobcd-st planted in your program and uses it to show values by their COBOL names.">
+              <div class="arch-icon">🗣️</div>
+              <span>cobcd.py</span>
+            </div>
+            <div class="arch-component" data-desc="cobcd-rw: runs at DEBUG time, called by cobcd.py. Powers 'cprint ?', which shows the variables mentioned near the line you are stopped on.">
+              <div class="arch-icon">🚪</div>
+              <span>cobcd-rw</span>
+            </div>
+          </div>
+          <div class="arch-zone">
+            <h4 class="arch-zone-label">Borrowed tools (must already be installed)</h4>
+            <div class="arch-component" data-desc="cobc: the GnuCOBOL compiler. Translates COBOL into C. cbl-gdb needs version 3.1 or later (3.2 preferred), which has features these extensions rely on.">
+              <div class="arch-icon">📜</div>
+              <span>cobc</span>
+            </div>
+            <div class="arch-component" data-desc="gcc: the C compiler. Turns the generated C into assembly, and assembly into the final runnable program. cobcd asks cobc which C compiler it uses rather than assuming.">
+              <div class="arch-icon">⚙️</div>
+              <span>gcc</span>
+            </div>
+            <div class="arch-component" data-desc="gdb: the debugger. Must be version 9 or later and built with Python support, because cobcd.py is a Python plugin for it.">
+              <div class="arch-icon">🐛</div>
+              <span>gdb</span>
+            </div>
+            <div class="arch-component" data-desc="readelf: a standard tool that lists the internal sections of a program file. cobcd.py uses it when loading extra COBOL modules into a debug session.">
+              <div class="arch-icon">🔬</div>
+              <span>readelf</span>
+            </div>
+          </div>
+          <div class="arch-description">Click any component to learn what it does</div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Key insight: build time vs. debug time</strong>
+            <p>Three crew members work while the program is being built. Two work later, while it is being debugged. They never run at the same moment, so the only way they can communicate is by leaving things inside the program file itself.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 3 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Where everything lives</h2>
+        <p>Each specialist gets its own folder. That is not tidiness for its own sake: it lets you tell an AI assistant "only touch <code>cobcd-sfix/</code>" and know the rest is safe.</p>
+
+        <div class="file-tree">
+          <div class="ft-folder open">
+            <span class="ft-name">cbl-gdb/</span>
+            <span class="ft-desc">The project root</span>
+            <div class="ft-children">
+              <div class="ft-file">
+                <span class="ft-name">cobcd</span>
+                <span class="ft-desc">The Planner. A Python script with no .py ending, so it looks like a command</span>
+              </div>
+              <div class="ft-file">
+                <span class="ft-name">cobcd.bat</span>
+                <span class="ft-desc">A tiny Windows launcher that just runs the script above</span>
+              </div>
+              <div class="ft-folder">
+                <span class="ft-name">cobcd-st/</span>
+                <span class="ft-desc">The Cartographer: cobst.cpp, fields.cpp, variables.cpp</span>
+              </div>
+              <div class="ft-folder">
+                <span class="ft-name">cobcd-sfix/</span>
+                <span class="ft-desc">The Editor: sfix.cpp</span>
+              </div>
+              <div class="ft-folder">
+                <span class="ft-name">cobcd-rw/</span>
+                <span class="ft-desc">The Bouncer: cobcd-rw.cpp plus the_words.cpp, the list of reserved words</span>
+              </div>
+              <div class="ft-folder">
+                <span class="ft-name">python/</span>
+                <span class="ft-desc">The Interpreter: cobcd.py</span>
+              </div>
+              <div class="ft-folder">
+                <span class="ft-name">include/</span>
+                <span class="ft-desc">version.h, the one place the version number is written down</span>
+              </div>
+              <div class="ft-folder">
+                <span class="ft-name">optfde01/</span>
+                <span class="ft-desc">A sample COBOL program, with VS Code settings for debugging it</span>
+              </div>
+              <div class="ft-folder">
+                <span class="ft-name">tests/</span>
+                <span class="ft-desc">Automated checks that the debugger still prints the right answers</span>
+              </div>
+              <div class="ft-file">
+                <span class="ft-name">Makefile</span>
+                <span class="ft-desc">The recipe for building and installing all of the above</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">How the Planner finds its crew</h2>
+        <p>Before doing anything else, <code>cobcd</code> works out where its helpers are. It checks an <span class="term" data-definition="An environment variable is a named setting that lives in your terminal session, outside any one program. Programs can read it to change their behaviour without you editing their code. Example: COBCDEVEL=1 cobcd -x prog.cbl">environment variable</span> to decide between two layouts.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">cobcd</span>
+            <pre><code><span class="code-line">    <span class="code-keyword">if</span> COBCDEVEL :</span><span class="code-line">        <span class="code-comment">## For development purposes, pick up executables from subdirectories</span></span><span class="code-line">        <span class="code-comment">## from where the cobcd script was found</span></span><span class="code-line">        COBST  <span class="code-operator">=</span> SCRIPTDIR <span class="code-operator">+</span> <span class="code-string">"/cobcd-st/cobcd-st"</span></span><span class="code-line">        SFIX   <span class="code-operator">=</span> SCRIPTDIR <span class="code-operator">+</span> <span class="code-string">"/cobcd-sfix/cobcd-sfix"</span></span><span class="code-line">        PYTHON <span class="code-operator">=</span> SCRIPTDIR <span class="code-operator">+</span> <span class="code-string">"/python/cobcd.py"</span></span><span class="code-line">        FMODE  <span class="code-operator">=</span> COBCDFMODE <span class="code-keyword">or</span> <span class="code-string">"1"</span>  <span class="code-comment"># '1' because most development takes place on Ubuntu/Intel, and we know it works</span></span><span class="code-line">    <span class="code-keyword">else</span> :</span><span class="code-line">        <span class="code-comment"># In normal operation, the executables are found in the same folder</span></span><span class="code-line">        <span class="code-comment"># as the cobcd script</span></span><span class="code-line">        COBST  <span class="code-operator">=</span> SCRIPTDIR <span class="code-operator">+</span> <span class="code-string">"/cobcd-st"</span></span><span class="code-line">        SFIX   <span class="code-operator">=</span> SCRIPTDIR <span class="code-operator">+</span> <span class="code-string">"/cobcd-sfix"</span></span><span class="code-line">        PYTHON <span class="code-operator">=</span> SCRIPTDIR <span class="code-operator">+</span> <span class="code-string">"/cobcd.py"</span></span><span class="code-line">        <span class="code-comment"># In normal operation, we embed a pointer</span></span><span class="code-line">        FMODE  <span class="code-operator">=</span> COBCDFMODE <span class="code-keyword">or</span> <span class="code-string">"1"</span></span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">If someone set COBCDEVEL, we are being run by a developer straight out of the project folder...</p>
+              <p class="tl">...so look for each helper inside its own sub-folder, right where it was just built.</p>
+              <p class="tl">Remember where the Cartographer, the Editor and the Interpreter are.</p>
+              <p class="tl">FMODE is "how should GDB find the Interpreter later?" Use the user's choice, or option 1 if they didn't say.</p>
+              <p class="tl">Otherwise we are properly installed...</p>
+              <p class="tl">...and all the helpers sit side by side in the same folder as this script.</p>
+              <p class="tl">Same three helpers, simpler addresses.</p>
+              <p class="tl">Same default for FMODE. Module 4 explains what the options mean.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🧰</div>
+          <div class="callout-content">
+            <strong class="callout-title">Pattern worth stealing: a development switch</strong>
+            <p>One setting flips the whole tool between "use the copies I am working on" and "use the installed copies". Ask your AI for this early in any multi-part project. It lets you test changes without installing them over the working version.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Two languages, on purpose</h2>
+        <p>The crew is split across Python and <span class="term" data-definition="C++ is a fast, compiled programming language. It takes more effort to write than Python, but programs written in it start instantly and chew through large files quickly.">C++</span>. The split follows the kind of work, not anyone's taste.</p>
+
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:var(--space-4); margin: var(--space-6) 0;">
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-4)">
+            <div class="pattern-icon" style="background: var(--color-actor-4)">🧵</div>
+            <h4 class="pattern-title">Python for the glue</h4>
+            <p class="pattern-desc"><strong>cobcd</strong> and <strong>cobcd.py</strong>. One spends its life launching other programs and reading their replies. The other must be Python, because Python is the language GDB accepts plugins in.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+            <div class="pattern-icon" style="background: var(--color-actor-2)">🏎️</div>
+            <h4 class="pattern-title">C++ for the engines</h4>
+            <p class="pattern-desc"><strong>cobcd-st</strong>, <strong>cobcd-sfix</strong> and <strong>cobcd-rw</strong>. Each reads a large text file from top to bottom and must not slow every build down. They are compiled once and then start instantly.</p>
+          </div>
+        </div>
+
+        <p>When you plan a project with an AI assistant, this is a good question to ask out loud: "which parts are glue and which parts are engines?" Glue wants a flexible language. Engines want a fast one.</p>
+      </section>
+
+      <!-- DRAG AND DROP -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Who would you send?</h2>
+        <p>Drag each crew member onto the job only they can do.</p>
+
+        <div class="dnd-container" id="dnd-module2">
+          <div class="dnd-chips">
+            <div class="dnd-chip" draggable="true" data-answer="cobcd">🎩 cobcd</div>
+            <div class="dnd-chip" draggable="true" data-answer="st">🗺️ cobcd-st</div>
+            <div class="dnd-chip" draggable="true" data-answer="sfix">✂️ cobcd-sfix</div>
+            <div class="dnd-chip" draggable="true" data-answer="py">🗣️ cobcd.py</div>
+            <div class="dnd-chip" draggable="true" data-answer="rw">🚪 cobcd-rw</div>
+          </div>
+          <div class="dnd-zones">
+            <div class="dnd-zone" data-correct="sfix">
+              <p class="dnd-zone-label">Make "stopped at line 42" mean line 42 of the COBOL file</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+            <div class="dnd-zone" data-correct="py">
+              <p class="dnd-zone-label">Show a stored value with its decimal point in the right place</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+            <div class="dnd-zone" data-correct="cobcd">
+              <p class="dnd-zone-label">Decide which tools run, and in what order, for this particular build</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+            <div class="dnd-zone" data-correct="rw">
+              <p class="dnd-zone-label">Tell that MOVE is part of the language but OLD-DATE might be a variable</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+            <div class="dnd-zone" data-correct="st">
+              <p class="dnd-zone-label">Record that a field called DATYR is 4 bytes long and where it sits</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+          </div>
+          <button class="quiz-check-btn" onclick="checkDnD('dnd-module2')">Check Matches</button>
+          <button class="quiz-reset-btn" onclick="resetDnD('dnd-module2')">Reset</button>
+        </div>
+      </section>
+
+      <!-- QUIZ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your understanding</h2>
+        <div class="quiz-container" id="quiz-module2">
+
+          <div class="quiz-question-block"
+               data-correct="b"
+               data-explanation-right="How a value is displayed is decided at debug time, by the Interpreter. cobcd-st only records what exists and where; it has no say in how things are shown."
+               data-explanation-wrong="Ask yourself WHEN the formatting happens. Values only exist while the program is running, so display is a debug-time job. That points at cobcd.py, the Interpreter.">
+            <h3 class="quiz-question">You want <code>cprint</code> to show eight-digit date fields as 2024-03-15 instead of 20240315. Which part of the project do you tell your AI assistant to change?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>cobcd-st, because it knows about every variable</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>cobcd.py, because showing values happens while debugging</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>cobcd, because it is the entry point for everything</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="a"
+               data-explanation-right="cobcd-st works by reading notes that GnuCOBOL writes into the generated C. If those notes change shape, the Cartographer is the one reading a map legend that no longer matches."
+               data-explanation-wrong="Follow the dependency. Only one crew member reads the C that GnuCOBOL generates, line by line, looking for notes in a particular shape: cobcd-st. A change in that shape hits it first.">
+            <h3 class="quiz-question">After upgrading GnuCOBOL, builds still succeed but <code>cprint</code> now reports that half your variables do not exist. Where do you look first?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>cobcd-st: the notes it reads from the generated C may have changed format</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>cobcd-rw: its list of reserved words is probably out of date</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>gdb: the debugger must be broken</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="c"
+               data-explanation-right="cobc is a borrowed tool. cbl-gdb wraps it but does not contain it, so no change to cbl-gdb's code can fix a missing GnuCOBOL. 'Ours or theirs?' saved you an afternoon."
+               data-explanation-wrong="Look at which name is in the error: cobc. That is GnuCOBOL, an outsider that cbl-gdb expects to find already installed. Nothing inside the cbl-gdb folders can supply it.">
+            <h3 class="quiz-question">On a fresh machine, running <code>cobcd -x prog.cbl</code> fails with a message that <code>cobc</code> cannot be found. Your AI assistant offers to "fix the bug in cobcd". What do you say?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Go ahead, cobcd is clearly looking in the wrong folder</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Rebuild cobcd-st and cobcd-sfix first</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Stop: this is a missing outside tool. Install GnuCOBOL; nothing in cbl-gdb needs changing</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module2')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module2')">Try Again</button>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>
+<section class="module" id="module-3" style="background: var(--color-bg-warm)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">03</span>
+      <h1 class="module-title">The Road Trip from COBOL to Machine</h1>
+      <p class="module-subtitle">How the build-time crew passes your program along, and the two detours cbl-gdb adds to the route.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Four towns between your code and a running program</h2>
+        <p>A build is a road trip with fixed stops. Each stop is a file in a different format, a little closer to what the chip understands. Normally <code>cobc</code> drives the whole way without stopping and throws away the in-between files.</p>
+
+        <div class="flow-steps">
+          <div class="flow-step">
+            <div class="flow-step-num">1</div>
+            <p><strong>prog.cbl</strong><br><span class="term" data-definition="Source code is the text a human (or an AI) writes. It is the starting point; everything else in a build is generated from it.">Source code</span></p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">2</div>
+            <p><strong>prog.c</strong><br>Generated C</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">3</div>
+            <p><strong>prog.s</strong><br><span class="term" data-definition="Assembly is a text listing of the exact instructions the chip will run, one per line. Still readable, just barely.">Assembly</span></p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">4</div>
+            <p><strong>prog.o</strong><br><span class="term" data-definition="An object file is assembly converted to binary: real machine instructions, but not yet a complete program. Several object files get joined together in the final step.">Object file</span></p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">5</div>
+            <p><strong>prog</strong><br><span class="term" data-definition="An executable is the finished, runnable program. The step that joins object files and libraries into one is called linking.">Executable</span></p>
+          </div>
+        </div>
+
+        <p style="margin-top: var(--space-8)">cbl-gdb needs to get out of the car twice: once at town 2 to add something to the C, and once at town 3 to edit the assembly. The problem is that <code>cobc</code> is the one driving.</p>
+      </section>
+
+      <!-- SCREEN 2 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Ask for the directions, then drive yourself</h2>
+        <p>The Planner's solution is neat. It asks <code>cobc</code> to do the first leg (COBOL to C) and then, instead of continuing, to <em>print out</em> the commands it would have run next. The Planner then runs those commands itself, with its two detours added.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">cobcd</span>
+            <pre><code><span class="code-line">        os.environ[<span class="code-string">"COBC_GEN_DUMP_COMMENTS"</span>]<span class="code-operator">=</span> <span class="code-string">'1'</span></span><span class="code-line">        TRIPLE_X_ADDITION <span class="code-operator">=</span> <span class="code-string">" -### -save-temps -A -ggdb -fgen-c-line-directives -fgen-c-labels "</span></span><span class="code-line">        TRIPLE_X_COMMAND <span class="code-operator">=</span> <span class="code-function">DeSpace</span>(COBC <span class="code-operator">+</span> TRIPLE_X_ADDITION) <span class="code-operator">+</span> COMMAND_LINE</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Flip a setting that tells GnuCOBOL: "while you write the C, leave a note for every COBOL variable."</p>
+              <p class="tl">Prepare a handful of extra instructions to give to cobc (decoded below).</p>
+              <p class="tl">The final command is: cobc, plus our extras, plus everything the user originally typed.</p>
+            </div>
+          </div>
+        </div>
+
+        <p>Each of those extras is a <span class="term" data-definition="A flag (or switch, or option) is a short code added to a command to change its behaviour, usually starting with a dash. Example: 'ls -l'. When talking to AI you might say 'add a flag for verbose output'.">flag</span>. Here is what the Planner is really asking for:</p>
+
+        <div class="badge-list">
+          <div class="badge-item">
+            <code class="badge-code">-###</code>
+            <span class="badge-desc">Don't run the C compiler. Just print the commands you would have run. This is a <span class="term" data-definition="A dry run is when a tool shows you what it WOULD do without actually doing it. Great for checking a risky command before it touches anything.">dry run</span>.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">-save-temps</code>
+            <span class="badge-desc">Don't delete the in-between files. We need to open them.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">-A -ggdb</code>
+            <span class="badge-desc">Pass "-ggdb" along to the C compiler: include full information for the debugger.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">-fgen-c-line-directives</code>
+            <span class="badge-desc">In the generated C, mark which COBOL line each chunk came from.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">-fgen-c-labels</code>
+            <span class="badge-desc">In the generated C, add named signposts for COBOL sections and paragraphs.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 3 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Reading the directions</h2>
+        <p>What comes back from <code>cobc</code> is a plain block of text. The Planner reads it line by line and reacts to three kinds of line.</p>
+
+        <div class="pattern-cards">
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-4)">
+            <h4 class="pattern-title" style="font-family: var(--font-mono)">preprocessing:</h4>
+            <p class="pattern-desc">Note the file names. Nothing to do yet.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+            <h4 class="pattern-title" style="font-family: var(--font-mono)">translating:</h4>
+            <p class="pattern-desc">A C file now exists. <strong>Detour 1:</strong> send it to cobcd-st.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+            <h4 class="pattern-title" style="font-family: var(--font-mono)">to be executed:</h4>
+            <p class="pattern-desc">A command cobc held back. Run it in two halves, with <strong>Detour 2</strong> (cobcd-sfix) in the middle.</p>
+          </div>
+        </div>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">cobcd</span>
+            <pre><code><span class="code-line">        test_for <span class="code-operator">=</span> <span class="code-string">"translating:"</span></span><span class="code-line">        n <span class="code-operator">=</span> line.<span class="code-function">find</span>(test_for)</span><span class="code-line">        <span class="code-keyword">if</span> n <span class="code-operator">==</span> <span class="code-number">0</span> :</span><span class="code-line">            we_translated_something <span class="code-operator">=</span> <span class="code-keyword">True</span></span><span class="code-line">            tokens <span class="code-operator">=</span> line.<span class="code-function">split</span>()</span><span class="code-line">            i_file <span class="code-operator">=</span> tokens[<span class="code-number">1</span>]</span><span class="code-line">            c_file <span class="code-operator">=</span> tokens[<span class="code-number">3</span>]</span><span class="code-line">            cbl_file <span class="code-operator">=</span> tokens[<span class="code-number">4</span>].<span class="code-function">replace</span>(<span class="code-string">'('</span>,<span class="code-string">''</span>).<span class="code-function">replace</span>(<span class="code-string">')'</span>,<span class="code-string">''</span>)</span><span class="code-line">            to_be_deleted.<span class="code-function">append</span>(c_file)</span><span class="code-line">            to_be_deleted.<span class="code-function">append</span>(i_file)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">We are looking for a line that starts with the word "translating:".</p>
+              <p class="tl">Where in this line does that word appear?</p>
+              <p class="tl">If it is right at the start (position 0), this is one of ours.</p>
+              <p class="tl">Make a note that real work happened, so we know to tidy up later.</p>
+              <p class="tl">Chop the line into separate words.</p>
+              <p class="tl">The 2nd word is the pre-processed COBOL file.</p>
+              <p class="tl">The 4th word is the C file that was just created.</p>
+              <p class="tl">The 5th word, minus its brackets, is the original COBOL file.</p>
+              <p class="tl">Put both in-between files on the "delete when finished" list.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-warning">
+          <div class="callout-icon">⚠️</div>
+          <div class="callout-content">
+            <strong class="callout-title">Reading another program's chatter is fragile</strong>
+            <p>This only works while <code>cobc</code> keeps printing exactly these words in exactly this order. The author knew it: just before this, the script forces the language to English so the messages can't arrive in German. If an AI proposes parsing a tool's human-readable output, ask whether the tool offers a structured format instead.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4: FLOW ANIMATION -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The whole route, step by step</h2>
+        <p>Follow one build from the moment you press Enter. Watch how often control returns to the Planner.</p>
+
+        <div class="flow-animation" data-steps='[
+          {"highlight":"flow-actor-1","label":"You type: cobcd -x prog.cbl"},
+          {"highlight":"flow-actor-2","label":"cobcd asks cobc: translate to C, then just tell me the rest of your plan","packet":true,"from":"actor-1","to":"actor-2"},
+          {"highlight":"flow-actor-2","label":"cobc writes prog.c, with a note for every variable, and prints its to-do list"},
+          {"highlight":"flow-actor-1","label":"The to-do list comes back to cobcd as plain text","packet":true,"from":"actor-2","to":"actor-1"},
+          {"highlight":"flow-actor-3","label":"DETOUR 1: cobcd hands prog.c to cobcd-st","packet":true,"from":"actor-1","to":"actor-3"},
+          {"highlight":"flow-actor-3","label":"cobcd-st reads the notes and staples a table of every variable onto the end of prog.c"},
+          {"highlight":"flow-actor-4","label":"cobcd runs the C compiler, but tells it to stop early, at assembly (prog.s)","packet":true,"from":"actor-1","to":"actor-4"},
+          {"highlight":"flow-actor-5","label":"DETOUR 2: prog.s goes to cobcd-sfix","packet":true,"from":"actor-4","to":"actor-5"},
+          {"highlight":"flow-actor-5","label":"cobcd-sfix removes line records that point at C files and keeps the ones that point at your COBOL"},
+          {"highlight":"flow-actor-4","label":"cobcd runs the original command again, this time feeding it the corrected prog.s","packet":true,"from":"actor-5","to":"actor-4"},
+          {"highlight":"flow-actor-4","label":"The C compiler assembles and links. The finished program exists."},
+          {"highlight":"flow-actor-1","label":"cobcd deletes the in-between files. From outside, it looked like one ordinary compile.","packet":true,"from":"actor-4","to":"actor-1"}
+        ]'>
+          <div class="flow-actors">
+            <div class="flow-actor" id="flow-actor-1">
+              <div class="flow-actor-icon">🎩</div>
+              <span>cobcd</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-2">
+              <div class="flow-actor-icon">📜</div>
+              <span>cobc</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-3">
+              <div class="flow-actor-icon">🗺️</div>
+              <span>cobcd-st</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-4">
+              <div class="flow-actor-icon">⚙️</div>
+              <span>gcc</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-5">
+              <div class="flow-actor-icon">✂️</div>
+              <span>cobcd-sfix</span>
+            </div>
+          </div>
+
+          <div class="flow-packet"></div>
+
+          <div class="flow-step-label">Click "Next Step" to begin</div>
+
+          <div class="flow-controls">
+            <button class="btn btn-primary flow-next-btn">Next Step</button>
+            <button class="btn flow-reset-btn">Restart</button>
+            <span class="flow-progress"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Detour 1: what the Cartographer leaves behind</h2>
+        <p>cobcd-st boils every COBOL variable down to one short record and joins them into a single enormous piece of text. Think of a spreadsheet squashed onto one line: a <code>|</code> between columns and a <code>~</code> at the end of each row.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">variables.cpp</span>
+            <pre><code><span class="code-line">    ss <span class="code-operator">&lt;&lt;</span> variable<span class="code-operator">-&gt;</span>record_type             <span class="code-operator">&lt;&lt;</span> <span class="code-string">"|"</span> ;</span><span class="code-line">    ss <span class="code-operator">&lt;&lt;</span> <span class="code-function">ZeroIsNull</span>(variable<span class="code-operator">-&gt;</span>level)       <span class="code-operator">&lt;&lt;</span> <span class="code-string">"|"</span> ;</span><span class="code-line">    ss <span class="code-operator">&lt;&lt;</span> name                              <span class="code-operator">&lt;&lt;</span> <span class="code-string">"|"</span> ;</span><span class="code-line">    ss <span class="code-operator">&lt;&lt;</span> variable<span class="code-operator">-&gt;</span>f_name                  <span class="code-operator">&lt;&lt;</span> <span class="code-string">"|"</span> ;</span><span class="code-line">    ss <span class="code-operator">&lt;&lt;</span> (variable<span class="code-operator">-&gt;</span>b_name <span class="code-keyword">EQ</span> <span class="code-string">"cob_local_ptr"</span> ? <span class="code-string">""</span> : variable<span class="code-operator">-&gt;</span>b_name) <span class="code-operator">&lt;&lt;</span> <span class="code-string">"|"</span> ;</span><span class="code-line">    ss <span class="code-operator">&lt;&lt;</span> variable<span class="code-operator">-&gt;</span>a_name                  <span class="code-operator">&lt;&lt;</span> <span class="code-string">"|"</span> ;</span><span class="code-line">    ss <span class="code-operator">&lt;&lt;</span> <span class="code-function">ZeroIsNull</span>(variable<span class="code-operator">-&gt;</span>offset)      <span class="code-operator">&lt;&lt;</span> <span class="code-string">"|"</span> ;</span><span class="code-line">    ss <span class="code-operator">&lt;&lt;</span> variable<span class="code-operator">-&gt;</span>length                  <span class="code-operator">&lt;&lt;</span> <span class="code-string">"|"</span> ;</span><span class="code-line">    ss <span class="code-operator">&lt;&lt;</span> <span class="code-function">ZeroIsNull</span>(variable<span class="code-operator">-&gt;</span>occurs_min)  <span class="code-operator">&lt;&lt;</span> <span class="code-string">"|"</span> ;</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Write which part of the program it belongs to (W for WORKING-STORAGE, L for LOCAL-STORAGE...), then a bar.</p>
+              <p class="tl">Write its COBOL level number (01, 05, 10...). If it's zero, write nothing.</p>
+              <p class="tl">Write its COBOL name.</p>
+              <p class="tl">Write the name of its descriptor in the C code, if it has one.</p>
+              <p class="tl">Write the name of the block of memory that holds it.</p>
+              <p class="tl">Write the name of its "type card": is it text, a number, how many digits?</p>
+              <p class="tl">Write how far into that block of memory it starts.</p>
+              <p class="tl">Write how many bytes long it is.</p>
+              <p class="tl">If it repeats (a table), write the minimum number of repeats.</p>
+            </div>
+          </div>
+        </div>
+
+        <p>So the <code>datyr</code> field from Module 1 ends up as a record shaped roughly like this (reconstructed from an example in the project's comments):</p>
+
+        <div class="translation-code" style="border-radius: var(--radius-md); margin: var(--space-6) 0;">
+          <pre><code><span class="code-keyword">W</span><span class="code-comment">|</span><span class="code-number">10</span><span class="code-comment">|</span><span class="code-function">datyr</span><span class="code-comment">||</span><span class="code-property">b_15</span><span class="code-comment">|</span><span class="code-property">a_7</span><span class="code-comment">|</span><span class="code-number">17</span><span class="code-comment">|</span><span class="code-number">4</span><span class="code-comment">|||~</span></code></pre>
+        </div>
+
+        <p>"In WORKING-STORAGE, level 10, named datyr, held in block b_15, type card a_7, starts 17 bytes in, 4 bytes long." That text is written into the C file as an ordinary piece of data, so it gets compiled <em>into</em> your program.</p>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Key insight: pack the map inside the suitcase</strong>
+            <p>The variable table could have been a separate file sitting next to the program. Embedding it means it can never be lost, left behind when the program is copied to another machine, or be out of date. When two things must always match, shipping them as one thing removes a whole class of bugs.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 6 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Detour 2: what the Editor cuts</h2>
+        <p>Assembly files contain little notes that say "the following instructions came from file N, line L". GDB uses them to know which source line to show you. Because your program went through C, the notes point at two kinds of file, and GDB gets confused about which to display.</p>
+
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:var(--space-4); margin: var(--space-6) 0;">
+          <div class="translation-code" style="border-radius: var(--radius-md)">
+            <span class="translation-label">Before sfix</span>
+            <pre><code><span class="code-comment"># illustrative</span>
+<span class="code-keyword">.loc</span> <span class="code-number">3 1412 5</span>   <span class="code-comment"># prog.c</span>
+<span class="code-keyword">.loc</span> <span class="code-number">1 110 11</span>   <span class="code-comment"># prog.cbl</span>
+<span class="code-keyword">.loc</span> <span class="code-number">4 88 3</span>     <span class="code-comment"># prog.c.h</span></code></pre>
+          </div>
+          <div class="translation-code" style="border-radius: var(--radius-md)">
+            <span class="translation-label">After sfix</span>
+            <pre><code><span class="code-comment"># illustrative</span>
+
+<span class="code-keyword">.loc</span> <span class="code-number">1 110 11</span>   <span class="code-comment"># prog.cbl</span>
+ </code></pre>
+          </div>
+        </div>
+
+        <p>cobcd-sfix first makes a list of every file the assembly mentions and gives each a verdict: zero means "pretend this never existed".</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">sfix.cpp</span>
+            <pre><code><span class="code-line">        <span class="code-keyword">if</span>( filename <span class="code-keyword">EQ</span> params.c_filename ) {</span><span class="code-line">            <span class="code-comment">// Skip over the cobc-generated .c file</span></span><span class="code-line">            retval[it<span class="code-operator">-&gt;</span>second] <span class="code-operator">=</span> <span class="code-number">0</span>;</span><span class="code-line">            <span class="code-keyword">continue</span>;</span><span class="code-line">        }</span><span class="code-line">        <span class="code-keyword">if</span>( filename.<span class="code-function">substr</span>(filename.<span class="code-function">length</span>()<span class="code-operator">-</span><span class="code-number">2</span>) <span class="code-keyword">EQ</span> <span class="code-string">".h"</span></span><span class="code-line">                <span class="code-keyword">OR</span> filename.<span class="code-function">substr</span>(filename.<span class="code-function">length</span>()<span class="code-operator">-</span><span class="code-number">2</span>) <span class="code-keyword">EQ</span> <span class="code-string">".c"</span>) {</span><span class="code-line">            <span class="code-comment">// Skip over any xxxx.h file</span></span><span class="code-line">            retval[it<span class="code-operator">-&gt;</span>second] <span class="code-operator">=</span> <span class="code-number">0</span>;</span><span class="code-line">            <span class="code-keyword">continue</span>;</span><span class="code-line">        }</span><span class="code-line">        <span class="code-keyword">if</span>( filename <span class="code-keyword">EQ</span> params.cbl_filename ) {</span><span class="code-line">            <span class="code-comment">// Force the COBOL source file to be #1</span></span><span class="code-line">            retval[it<span class="code-operator">-&gt;</span>second] <span class="code-operator">=</span> <span class="code-number">1</span>;</span><span class="code-line">            <span class="code-keyword">continue</span>;</span><span class="code-line">        }</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">If this is the C file that GnuCOBOL generated...</p>
+              <p class="tl">...give it a zero ("ignore") and move on to the next file.</p>
+              <p class="tl">If the file name ends in ".h" or ".c", it is some other piece of C plumbing...</p>
+              <p class="tl">...zero for that one too.</p>
+              <p class="tl">If this is the COBOL file the user actually wrote...</p>
+              <p class="tl">...mark it as a keeper.</p>
+              <p class="tl">(This author writes EQ and OR instead of == and ||. A personal habit, not standard C++.)</p>
+            </div>
+          </div>
+        </div>
+
+        <p>Then it copies the assembly out line by line. Any line note whose file got a zero is simply not copied. With only COBOL notes left, GDB has no choice but to show you COBOL.</p>
+      </section>
+
+      <!-- QUIZ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your understanding</h2>
+        <div class="quiz-container" id="quiz-module3">
+
+          <div class="quiz-question-block"
+               data-correct="b"
+               data-explanation-right="Names and values come from detour 1 (the variable table), and those are fine. Which source line GDB shows comes from the line notes in the assembly, which is detour 2. Splitting a symptom by 'which stop produces this?' is how you narrow a pipeline bug."
+               data-explanation-wrong="Split the symptom in two. Variable names and values work, so the variable table (detour 1) is fine. What is wrong is which source LINE is shown, and line notes are the business of detour 2, cobcd-sfix.">
+            <h3 class="quiz-question">After a change to the project, <code>cprint</code> still shows correct values, but when you step through the program GDB displays lines from <code>prog.c</code> instead of <code>prog.cbl</code>. Which stop on the route do you investigate?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Detour 1, cobcd-st: the variable table is damaged</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Detour 2, cobcd-sfix: the line notes pointing at C files are not being removed</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The first leg: cobc translated the COBOL incorrectly</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="c"
+               data-explanation-right="cobcd recognises that line by its exact first word. Change the word and the line is ignored, so detour 1 silently never happens and later steps work from missing information. Nothing says 'I no longer understand cobc': the classic failure mode of parsing human-readable output."
+               data-explanation-wrong="Look again at how cobcd spots the line: it checks whether the text starts with the exact word 'translating:'. A different word simply does not match, so the line is skipped quietly and cobcd-st is never called.">
+            <h3 class="quiz-question">Suppose a future GnuCOBOL release rewords its progress message from "translating:" to "translate:". What is the most likely effect on cobcd?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Nothing: cobcd understands what cobc means</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>cobcd refuses to start and prints a clear version error</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The line goes unrecognised, cobcd-st is never run, and the build goes wrong later with no message pointing at the real cause</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="a"
+               data-explanation-right="One file means one thing to copy, and no way for the two halves to disagree. The cost is a slightly bigger program, which is a cheap price for never debugging with the wrong map."
+               data-explanation-wrong="Speed and secrecy are not the point here. The win is that two things which must always match are shipped as a single file, so they cannot be separated or drift out of step.">
+            <h3 class="quiz-question">You are designing a tool that produces a data file plus a "legend" explaining its columns. Borrowing cbl-gdb's approach to the variable table, where should the legend go, and why?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Inside the data file itself, so the two can never be separated or mismatched</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>In a separate file with a similar name, so each file stays small</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>On a shared server, so everyone reads the same copy</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module3')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module3')">Try Again</button>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>
+<section class="module" id="module-4" style="background: var(--color-bg)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">04</span>
+      <h1 class="module-title">Inside the Debugger</h1>
+      <p class="module-subtitle">The build is over. Now follow <code>cprint custmas-ctr</code> from your keyboard to an answer.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">First problem: GDB has never heard of cobcd.py</h2>
+        <p>GDB only gains COBOL powers if it loads the Interpreter script. Nobody wants to do that by hand each time, so the Planner leaves GDB a hint at build time. Which kind of hint is called the FMODE, and there are five choices:</p>
+
+        <div class="badge-list">
+          <div class="badge-item">
+            <code class="badge-code">0</code>
+            <span class="badge-desc">Leave no hint at all. You load the script yourself.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">1</code>
+            <span class="badge-desc"><strong>The default.</strong> Write the script's <em>name</em> into a special <span class="term" data-definition="A program file is divided into labelled compartments called sections: one for instructions, one for data, several for debugger information. GDB reads one called .debug_gdb_scripts to find scripts it should load.">section</span> of the program. GDB reads it and goes looking for cobcd.py.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">2</code>
+            <span class="badge-desc">Write the <em>entire script</em> into the program. All 8,400 lines travel inside it.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">3</code>
+            <span class="badge-desc">Put a <span class="term" data-definition="A symlink (symbolic link, or soft link) is a tiny file that says 'the real file is over there'. Like a shortcut icon on a desktop.">symlink</span> called <code>prog-gdb.py</code> next to the program. GDB automatically loads a file with that name.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">4</code>
+            <span class="badge-desc">Put a full <em>copy</em> of the script, named <code>prog-gdb.py</code>, next to the program.</span>
+          </div>
+        </div>
+
+        <p>Why so many? Because no single method works everywhere, as this piece of the Planner admits:</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">cobcd</span>
+            <pre><code><span class="code-line">    <span class="code-keyword">if</span> windows :</span><span class="code-line">        <span class="code-comment">## In Windows attempting to embed either the filename or the file fails.</span></span><span class="code-line">        <span class="code-comment">## And we can't create a symlink because we don't have admin privileges</span></span><span class="code-line">        FMODE <span class="code-operator">=</span> COBCDFMODE <span class="code-keyword">or</span> <span class="code-string">"4"</span>  <span class="code-comment">## We will create make a renamed copy of cobcd.py next to the executable</span></span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">If we are running on Windows...</p>
+              <p class="tl">...options 1 and 2 don't work there.</p>
+              <p class="tl">...and option 3 needs administrator rights we don't have.</p>
+              <p class="tl">So unless the user insists otherwise, fall back to option 4: a plain copy.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-warning">
+          <div class="callout-icon">🔒</div>
+          <div class="callout-content">
+            <strong class="callout-title">The most common "it doesn't work"</strong>
+            <p>GDB refuses to auto-load scripts from folders it has not been told to trust. If <code>cprint</code> is an "undefined command", the build is probably fine and the script just was not loaded. The install step prints the lines to add to your <code>~/.gdbinit</code> settings file, starting with <code>add-auto-load-safe-path</code>.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">How a script teaches GDB a new word</h2>
+        <p>GDB offers a <span class="term" data-definition="A plugin API (or extension API) is a set of official hooks a program provides so outsiders can add features without touching its source code. Browser extensions and VS Code extensions work the same way.">plugin API</span>: hand it a small bundle that says "my name is X, and here is what to do when someone types X", and X becomes a real command. Here is the simplest command in the project, complete.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">cobcd.py</span>
+            <pre><code><span class="code-line">  <span class="code-keyword">def</span> <span class="code-function">__init__</span>(self):</span><span class="code-line">    <span class="code-keyword">if</span> GV_noisy_registration:</span><span class="code-line">      <span class="code-function">print</span>(<span class="code-string">'Registering command help-cobol'</span>)</span><span class="code-line">    <span class="code-function">super</span>(CHelp, self).<span class="code-function">__init__</span>(<span class="code-string">"help-cobol"</span>, gdb.COMMAND_USER)</span><span class="code-line"> </span><span class="code-line">  <span class="code-keyword">def</span> <span class="code-function">invoke</span>(self, arguments, from_tty):</span><span class="code-line">    <span class="code-keyword">try</span>:</span><span class="code-line">      <span class="code-function">print</span>(self.CHELP_TEXT)</span><span class="code-line">    <span class="code-keyword">except</span> KeyboardInterrupt <span class="code-keyword">as</span> ki:</span><span class="code-line">      <span class="code-function">print</span>(ki)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Part one, "set up": this runs once, when the script is loaded.</p>
+              <p class="tl">If we are in chatty mode, announce ourselves.</p>
+              <p class="tl">The important line: tell GDB "I am a command, and my name is help-cobol".</p>
+              <p class="tl">Part two, "invoke": GDB runs this every time someone types the command.</p>
+              <p class="tl">Print the help text.</p>
+              <p class="tl">If the user presses Ctrl-C part-way through, don't crash. Just stop politely.</p>
+            </div>
+          </div>
+        </div>
+
+        <p>Every c-command follows this two-part shape. At the very bottom of the script, one line per command switches them all on:</p>
+
+        <div class="translation-code" style="border-radius: var(--radius-md); margin: var(--space-6) 0;">
+          <span class="translation-label">cobcd.py</span>
+          <pre><code><span class="code-function">CPrint</span>()
+<span class="code-function">CWatch</span>()
+<span class="code-function">CBreak</span>()
+<span class="code-function">CLoad</span>()
+<span class="code-function">CNext</span>()</code></pre>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Key insight: look for the extension points</strong>
+            <p>Before asking an AI to build a feature into a tool, ask it: "does this tool have a plugin or extension API?" GDB, VS Code, browsers, Blender and most serious tools do. Building on the official hook means your work survives the tool's next update.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 3: CHAT -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The librarian and the card catalog</h2>
+        <p>A running program's memory is a vast library with no labels on the shelves, only shelf numbers. The variable table from Module 3 is the card catalog. The Interpreter is the librarian: you ask for a title, it finds the card, walks to the shelf, and reads you what is there.</p>
+        <p>Here is that conversation for the sample program, paused just after its third record.</p>
+
+        <div class="chat-window" id="chat-module4">
+          <div class="chat-messages">
+            <div class="chat-message" data-msg="0" data-sender="you" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-5)">Y</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-5)">You</span>
+                <p>cprint custmas-ctr</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="1" data-sender="gdb" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-3)">G</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-3)">GDB</span>
+                <p>"cprint" isn't one of my own commands. It was registered by cobcd.py. Passing it over.</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="2" data-sender="py" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-4)">P</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-4)">cobcd.py</span>
+                <p>I haven't opened this program's catalog yet. GDB, where in memory is the thing called VARIABLE_STRING_optfde012Ecbl?</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="3" data-sender="gdb" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-3)">G</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-3)">GDB</span>
+                <p>Found it. Here is its shelf number.</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="4" data-sender="py" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-4)">P</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-4)">cobcd.py</span>
+                <p>Memory, read me just the first 9 characters from that shelf.</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="5" data-sender="mem" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">M</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-2)">Program memory</span>
+                <p>They are digits. A nine-digit number.</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="6" data-sender="py" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-4)">P</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-4)">cobcd.py</span>
+                <p>That's the catalog's total length, so now I know exactly how much to fetch. Send the rest in one go. I'll cut it at every ~ and every | and file the cards.</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="7" data-sender="py" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-4)">P</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-4)">cobcd.py</span>
+                <p>Card for CUSTMAS-CTR found: which memory block, how far in, 5 bytes long, type "digits stored as text". Memory, 5 bytes from that spot please.</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="8" data-sender="mem" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">M</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-2)">Program memory</span>
+                <p>30 30 30 30 33</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="9" data-sender="py" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-4)">P</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-4)">cobcd.py</span>
+                <p>The type card says these are text characters, and 30 is the code for "0", 33 for "3". So: 0 0 0 0 3. You, your counter is at 3.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="chat-typing" style="display:none">
+            <div class="chat-avatar" id="chat-module4-typing-avatar">?</div>
+            <div class="chat-typing-dots">
+              <span class="typing-dot"></span>
+              <span class="typing-dot"></span>
+              <span class="typing-dot"></span>
+            </div>
+          </div>
+
+          <div class="chat-controls">
+            <button class="btn btn-primary chat-next-btn">Next Message</button>
+            <button class="btn chat-all-btn">Play All</button>
+            <button class="btn chat-reset-btn">Replay</button>
+            <span class="chat-progress"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Unpacking the catalog</h2>
+        <p>This is the "cut it at every ~ and every |" moment in real code. It is the mirror image of the C++ you read in Module 3, which wrote those same bars and squiggles.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">cobcd.py</span>
+            <pre><code><span class="code-line">    variable_lines <span class="code-operator">=</span> variable_string.<span class="code-function">split</span>(<span class="code-string">'~'</span>)</span><span class="code-line">    <span class="code-keyword">for</span> variable_line <span class="code-keyword">in</span> variable_lines:</span><span class="code-line">      tokens <span class="code-operator">=</span> variable_line.<span class="code-function">split</span>(<span class="code-string">'|'</span>)</span><span class="code-line">      self.line_list.<span class="code-function">LoadFromLine</span>(tokens)</span><span class="code-line">      self.var_trie.<span class="code-function">LoadTrieFromLine</span>(tokens)</span><span class="code-line">      self.<span class="code-function">LoadPerformFromLine</span>(tokens)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Cut the giant text at every ~ to get one record per row.</p>
+              <p class="tl">For each of those rows...</p>
+              <p class="tl">...cut it at every | to get its separate columns.</p>
+              <p class="tl">If the row describes where a program starts, remember that line number.</p>
+              <p class="tl">If the row describes a variable, file it in the name index (a <span class="term" data-definition="A trie (say 'try') is a tree-shaped index built for looking things up by name, piece by piece. It is what makes autocomplete fast: type CUST and it already knows every name that starts that way.">trie</span>).</p>
+              <p class="tl">If the row describes a PERFORM, remember where it returns to. cnext uses this to step over it.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">🤝</div>
+          <div class="callout-content">
+            <strong class="callout-title">Key insight: a data format is a contract</strong>
+            <p>The writer is C++ and runs at build time. The reader is Python and runs days later. All they share is an agreement: ten columns, in this order, split by these symbols. The Python even finds columns by position number. If you ask an AI to change one side, tell it explicitly to update the other side too.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Bytes are not numbers until someone reads them</h2>
+        <p>The shelf holds raw <span class="term" data-definition="A byte is the basic unit of computer memory: one small number from 0 to 255. Everything a program stores, text or number or image, is ultimately a row of bytes.">bytes</span>. What they <em>mean</em> depends on the type card, because COBOL can store the same number in very different ways. Here is 12345, three times:</p>
+
+        <div class="pattern-cards">
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+            <h4 class="pattern-title">As text (DISPLAY)</h4>
+            <p class="pattern-desc" style="font-family: var(--font-mono)">31 32 33 34 35</p>
+            <p class="pattern-desc">One byte per digit, 5 bytes. Readable, bulky.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+            <h4 class="pattern-title">Packed (COMP-3)</h4>
+            <p class="pattern-desc" style="font-family: var(--font-mono)">12 34 5C</p>
+            <p class="pattern-desc">Two digits per byte, with the sign tucked into the last half-byte. 3 bytes.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+            <h4 class="pattern-title">Binary (COMP)</h4>
+            <p class="pattern-desc" style="font-family: var(--font-mono)">30 39</p>
+            <p class="pattern-desc">The way the chip itself counts. 2 bytes.</p>
+          </div>
+        </div>
+
+        <p style="margin-top: var(--space-6)">The Interpreter has a small decoder for each. This is the heart of the packed one. A <span class="term" data-definition="A nybble (or nibble) is half a byte: a number from 0 to 15, written as one hexadecimal digit 0-9 or A-F. Packed decimal stores one decimal digit in each nybble.">nybble</span> is half a byte.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">cobcd.py</span>
+            <pre><code><span class="code-line">  <span class="code-keyword">for</span> digit <span class="code-keyword">in</span> digits:</span><span class="code-line">    nybble <span class="code-operator">=</span> digit <span class="code-operator">&gt;&gt;</span> <span class="code-number">4</span></span><span class="code-line">    <span class="code-keyword">if</span> nybble <span class="code-operator">==</span> <span class="code-number">0x0B</span> <span class="code-keyword">or</span> nybble <span class="code-operator">==</span> <span class="code-number">0x0D</span>:</span><span class="code-line">      is_negative <span class="code-operator">=</span> <span class="code-keyword">True</span></span><span class="code-line">    <span class="code-keyword">elif</span> nybble <span class="code-operator">&lt;=</span> <span class="code-number">0x09</span>:</span><span class="code-line">      value <span class="code-operator">*=</span> <span class="code-number">10</span></span><span class="code-line">      value <span class="code-operator">+=</span> nybble</span><span class="code-line">    nybble <span class="code-operator">=</span> digit <span class="code-operator">&amp;</span> <span class="code-number">0x0F</span></span><span class="code-line">    <span class="code-keyword">if</span> nybble <span class="code-operator">==</span> <span class="code-number">0x0B</span> <span class="code-keyword">or</span> nybble <span class="code-operator">==</span> <span class="code-number">0x0D</span>:</span><span class="code-line">      is_negative <span class="code-operator">=</span> <span class="code-keyword">True</span></span><span class="code-line">    <span class="code-keyword">elif</span> nybble <span class="code-operator">&lt;=</span> <span class="code-number">0x09</span>:</span><span class="code-line">      value <span class="code-operator">*=</span> <span class="code-number">10</span></span><span class="code-line">      value <span class="code-operator">+=</span> nybble</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Take the bytes one at a time.</p>
+              <p class="tl">Look at the left half of this byte.</p>
+              <p class="tl">If it is the special code B or D, that is a minus sign. Remember the number is negative.</p>
+              <p class="tl">If it is 0 to 9, it is a real digit: shift what we have one place left and add it on. (12 becomes 120, plus 3, is 123.)</p>
+              <p class="tl">Now look at the right half of the same byte...</p>
+              <p class="tl">...and do exactly the same two checks again.</p>
+              <p class="tl">Anything else (like the C in 5C, meaning "plus") is quietly skipped.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 6 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Don't do the same work twice (but know when to redo it)</h2>
+        <p>Reading and filing a whole catalog is slow for big programs. A comment in the code records a test with 30,000 variables: the catalog was 1.7 million characters and took over a second to file. Nobody wants that pause on every command.</p>
+
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:var(--space-4); margin: var(--space-6) 0;">
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-5)">
+            <div class="pattern-icon" style="background: var(--color-actor-5)">🗄️</div>
+            <h4 class="pattern-title">Keep what you filed</h4>
+            <p class="pattern-desc">Once a catalog is parsed, the result is stashed under the catalog's name. Come back to that program later and it is ready instantly. This is a <span class="term" data-definition="A cache is a saved copy of the result of slow work, kept so the work doesn't have to be repeated. Useful phrase for AI: 'cache the parsed result so we only do this once'.">cache</span>.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+            <div class="pattern-icon" style="background: var(--color-actor-1)">🚩</div>
+            <h4 class="pattern-title">Distrust what you fetched</h4>
+            <p class="pattern-desc">Values read from memory are also remembered. But the moment the program runs again they may be wrong, so every one is flagged "dirty" and re-read on next use.</p>
+          </div>
+        </div>
+
+        <p>The second card is three lines of code. GDB announces "the program just stopped" as an <span class="term" data-definition="An event is a notification that something happened: a click, a file finishing, a program stopping. Code that says 'when this happens, run that' is called an event handler or callback.">event</span>, and the Interpreter has signed up to hear it:</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">cobcd.py</span>
+            <pre><code><span class="code-line"><span class="code-keyword">def</span> <span class="code-function">stop_handler</span>(event):</span><span class="code-line">  <span class="code-comment"># When the inferior has been running, and is now stopped, we</span></span><span class="code-line">  <span class="code-comment"># need to flag all COBOL variables as IsDirty</span></span><span class="code-line">  GV_ModuleInformation.<span class="code-function">FlagAllAsDirty</span>()</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Whenever GDB tells us the program has stopped again...</p>
+              <p class="tl">("Inferior" is just GDB's word for the program being debugged.)</p>
+              <p class="tl">...everything we remembered about its values might be out of date.</p>
+              <p class="tl">So mark every variable "don't trust the remembered value, look again".</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🧠</div>
+          <div class="callout-content">
+            <strong class="callout-title">The half of caching people forget</strong>
+            <p>Saving a result is easy. Knowing when the saved result has gone stale is the hard part, and "it shows the old value" is one of the most common bugs in all of software. Whenever an AI adds a cache for you, ask: "and what clears it?"</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- QUIZ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your understanding</h2>
+        <div class="quiz-container" id="quiz-module4">
+
+          <div class="quiz-question-block"
+               data-correct="b"
+               data-explanation-right="'Undefined command' means GDB never registered the word cprint, which means cobcd.py never ran. The usual cause is GDB declining to auto-load from a folder it doesn't trust. The variable table is irrelevant until the script is loaded."
+               data-explanation-wrong="Read the error literally: GDB does not know the WORD cprint. That only happens if cobcd.py never loaded and so never registered it. Check how the script is supposed to be found (FMODE) and whether GDB trusts that folder.">
+            <h3 class="quiz-question">You built with <code>cobcd</code>, the build reported no problems, but in GDB typing <code>cprint TOTAL</code> answers <em>Undefined command: "cprint"</em>. What is the most likely cause?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The variable table is missing the TOTAL field</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>GDB never loaded cobcd.py, probably because its folder isn't on GDB's trusted list</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>cobcd-sfix removed too many line notes</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="c"
+               data-explanation-right="The reader finds columns by position. Insert a new one in the middle and every later column is read as its neighbour: lengths become offsets, offsets become type cards. Both sides of a contract must change together, and the test must exercise both."
+               data-explanation-wrong="The writer was tested alone, but it has a partner. cobcd.py reads the record by column position, so a new column in the middle shifts everything after it. Nothing fails at build time; the damage shows up later, in the debugger.">
+            <h3 class="quiz-question">An AI assistant adds a new column to each variable record, right after the name, by editing the C++ in cobcd-st. It runs cobcd-st, sees the new column in the output, and reports "done". What have you learned in this module that makes you push back?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>C++ can't write more than ten columns</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The new column will make programs too large to run</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The Python reader counts columns by position, so it now misreads every column after the new one</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="a"
+               data-explanation-right="Remembered values are only refreshed because a 'the program stopped' event marks them dirty. A new way of running the program that doesn't lead to that marking leaves the old values looking valid. Classic stale cache."
+               data-explanation-wrong="The clue is 'the value from before'. Something remembered an old answer and was never told to forget it. In this design, forgetting is triggered by the stop event marking everything dirty.">
+            <h3 class="quiz-question">You have an AI add a custom "run until the next file write" command to cobcd.py. It works, except that afterwards <code>cprint</code> keeps showing each variable's value from <em>before</em> the run. Which mechanism did the new command most likely bypass?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The step that marks all remembered values as dirty when the program stops</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The packed-decimal decoder</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The FMODE setting chosen at build time</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module4')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module4')">Try Again</button>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>
+<section class="module" id="module-5" style="background: var(--color-bg-warm)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">05</span>
+      <h1 class="module-title">When Things Break</h1>
+      <p class="module-subtitle">How this project fails safely, remembers its scars, and checks its own work. The habits that separate a demo from a tool people rely on.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Fail like an escalator</h2>
+        <p>When an escalator breaks, it becomes stairs. It is worse, but you still get upstairs. When a lift breaks, you are stuck. The Planner is built like an escalator: if its clever route fails for any reason, it quietly does what you would have done without it.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">cobcd</span>
+            <pre><code><span class="code-line">        <span class="code-keyword">except</span> :</span><span class="code-line">            <span class="code-comment">## It is common for something to go wrong with that first attempt; anything</span></span><span class="code-line">            <span class="code-comment">## from bad file names to syntax errors in the code.  Let's go for a minimal</span></span><span class="code-line">            <span class="code-comment">## response with an ordinary compilation and exit</span></span><span class="code-line">            command <span class="code-operator">=</span> [COBC] <span class="code-operator">+</span> ORIGINAL_COMMAND_LINE</span><span class="code-line">            <span class="code-function">print</span>(<span class="code-string">'#### Ordinary compile due to thrown exception'</span>)</span><span class="code-line">            <span class="code-function">SmartPrint</span>(command)</span><span class="code-line">            <span class="code-comment">## Execute it, ensuring we report a failure via return code:</span></span><span class="code-line">            resultcode <span class="code-operator">=</span> <span class="code-function">SubprocessCall</span>(command,<span class="code-keyword">True</span>)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">If the "print me your plan" request blew up, for whatever reason...</p>
+              <p class="tl">...don't try to diagnose it. It is usually a typo in a file name or a mistake in the COBOL.</p>
+              <p class="tl">Rebuild the exact command the user would have typed without us: plain cobc.</p>
+              <p class="tl">Say out loud that we are falling back, and show the command.</p>
+              <p class="tl">Run it. The user sees the real compiler's own, familiar error messages.</p>
+            </div>
+          </div>
+        </div>
+
+        <p>The technical name is <span class="term" data-definition="Graceful degradation means that when part of a system fails, it drops to a simpler mode that still works instead of collapsing completely. Useful phrase for AI: 'if this step fails, fall back to the plain behaviour'.">graceful degradation</span>. Notice what it buys: a COBOL typo produces a COBOL error message, not a confusing complaint from deep inside cbl-gdb. The fallback also passes the failure signal along (its <span class="term" data-definition="A return code (or exit code) is a number a program hands back when it finishes: 0 means 'all good', anything else means 'something went wrong'. Scripts and build tools check it to decide whether to carry on.">return code</span>), so anything automating the build still knows it failed.</p>
+      </section>
+
+      <!-- SCREEN 2 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Scar tissue: fixes nobody would invent</h2>
+        <p>Some code exists only because something once broke in the real world. It often looks pointless. This fragment of the Editor changes a single character on certain lines of assembly, from a 0 to a 1.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">sfix.cpp</span>
+            <pre><code><span class="code-line">        <span class="code-keyword">if</span>( <span class="code-function">strstr</span>(ach, <span class="code-string">"\t.loc "</span>) <span class="code-keyword">EQ</span> ach )</span><span class="code-line">            {</span><span class="code-line">            <span class="code-keyword">char</span> <span class="code-operator">*</span>p <span class="code-operator">=</span> <span class="code-function">strstr</span>(ach, <span class="code-string">"is_stmt 0"</span>);</span><span class="code-line">            <span class="code-keyword">if</span>( p )</span><span class="code-line">                {</span><span class="code-line">                p[<span class="code-number">8</span>] <span class="code-operator">=</span> <span class="code-string">'1'</span>;</span><span class="code-line">                }</span><span class="code-line">            }</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">If this line of assembly is one of those "came from file N, line L" notes...</p>
+              <p class="tl">...look inside it for the exact text "is_stmt 0".</p>
+              <p class="tl">If it is there...</p>
+              <p class="tl">...overwrite the 9th character of that text, the 0, with a 1.</p>
+              <p class="tl">That's all. One character.</p>
+            </div>
+          </div>
+        </div>
+
+        <p>Why? The only explanation is the comment sitting above it, which says that after GnuCOBOL 3.2 arrived, notes marked 0 stopped working and notes marked 1 "apparently did". The author is refreshingly honest about this kind of thing throughout:</p>
+
+        <div class="pattern-cards">
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+            <p class="pattern-desc" style="font-family: var(--font-mono)">// It is a mystery.</p>
+            <p class="pattern-desc">sfix.cpp, on why removing certain lines breaks optimised builds</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-4)">
+            <p class="pattern-desc" style="font-family: var(--font-mono)">// I hope it works.</p>
+            <p class="pattern-desc">sfix.cpp, on undoing a design decision whose reason was forgotten</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+            <p class="pattern-desc" style="font-family: var(--font-mono)"># Windows.  Always Windows</p>
+            <p class="pattern-desc">cobcd, while stripping the extra line-ending character Windows adds</p>
+          </div>
+        </div>
+
+        <div class="callout callout-warning">
+          <div class="callout-icon">🚧</div>
+          <div class="callout-content">
+            <strong class="callout-title">Don't tear down a fence until you know why it was built</strong>
+            <p>AI assistants love to "simplify" code like this, because out of context it really does look useless. Before accepting a clean-up, ask: "what does the comment say this is for, and which test proves it is safe to remove?" If there is no comment and no test, that is a finding in itself.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 3 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Doing it twice should be the same as doing it once</h2>
+        <p>The Cartographer staples a variable table onto the end of the C file. What if it gets run on the same file twice? Two tables, a broken build. So before stapling, it checks for its own earlier work.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">cobst.cpp</span>
+            <pre><code><span class="code-line">    <span class="code-keyword">while</span>( <span class="code-function">fgets</span>(ach,<span class="code-keyword">sizeof</span>(ach),fcfile) ) {</span><span class="code-line">        <span class="code-keyword">if</span>( <span class="code-function">strstr</span>(ach,<span class="code-string">"/* COBCD DEBUGGING INFORMATION */"</span>) <span class="code-keyword">EQ</span> ach ) {</span><span class="code-line">            <span class="code-comment">// For the sake of idempotency.  This can happen during debugging and</span></span><span class="code-line">            <span class="code-comment">// development, when running COBST multiple times on the same input file</span></span><span class="code-line">            <span class="code-keyword">break</span>;</span><span class="code-line">        }</span><span class="code-line">        c_file <span class="code-operator">+=</span> ach;</span><span class="code-line">    }</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Read the existing C file one line at a time.</p>
+              <p class="tl">If we reach a line that is our own signature...</p>
+              <p class="tl">...we have been here before. Everything from this point on is our old table.</p>
+              <p class="tl">Stop reading. The old table is left behind.</p>
+              <p class="tl">Otherwise, keep this line.</p>
+              <p class="tl">(Afterwards the kept lines are written back, followed by one fresh table.)</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Key insight: idempotent means "safe to repeat"</strong>
+            <p>A pedestrian-crossing button is <span class="term" data-definition="An operation is idempotent if doing it several times leaves things exactly as if you had done it once. Saving a file is idempotent; 'add 1 to the counter' is not.">idempotent</span>: pressing it five times is the same as pressing it once. Any step that modifies a file, sends a message or charges a card should be built this way, because sooner or later it <em>will</em> run twice. It is a word worth using with your AI: "make this step idempotent".</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Turning the lights on</h2>
+        <p>The Planner "works pretty hard at being invisible", as its own comments put it. That is lovely until something goes wrong. So every crew member has a switch that makes it narrate what it is doing. Each is an environment variable you put in front of the command.</p>
+
+        <div class="badge-list">
+          <div class="badge-item">
+            <code class="badge-code">ECHO=1</code>
+            <span class="badge-desc">Print every command the Planner runs, in order. (Adding <code>-v</code> does the same.)</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">COBCDNOCLEAN=1</code>
+            <span class="badge-desc">Don't delete the in-between files. Leave the .c and .s where you can open them.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">SAVE_S=1</code>
+            <span class="badge-desc">Keep a copy of the assembly as it was <em>before</em> the Editor touched it.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">SHOW_TIME=1</code>
+            <span class="badge-desc">Report how long each stage of the build took.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">COBST_NOISY=1</code>
+            <span class="badge-desc">Make the Cartographer echo every line it reads.</span>
+          </div>
+        </div>
+
+        <p>These matter most when an AI assistant is stuck guessing. The way out of a bug loop is always the same: stop changing code and start looking at evidence.</p>
+
+        <div class="step-cards">
+          <div class="step-card">
+            <div class="step-num">1</div>
+            <div class="step-body">
+              <strong>Reproduce it with the lights on</strong>
+              <p>Run the failing build again with <code>ECHO=1 COBCDNOCLEAN=1</code>.</p>
+            </div>
+          </div>
+          <div class="step-card">
+            <div class="step-num">2</div>
+            <div class="step-body">
+              <strong>Walk the route</strong>
+              <p>Open the file at each town from Module 3. Is the variable table at the end of the .c? Do the line notes in the .s look right?</p>
+            </div>
+          </div>
+          <div class="step-card">
+            <div class="step-num">3</div>
+            <div class="step-body">
+              <strong>Find the first stop where things look wrong</strong>
+              <p>The crew member that produced that file is your suspect. Everyone after it is innocent.</p>
+            </div>
+          </div>
+          <div class="step-card">
+            <div class="step-num">4</div>
+            <div class="step-body">
+              <strong>Only now change code</strong>
+              <p>And give the AI the evidence: "the .s is fine before sfix and wrong after it" beats "it doesn't work".</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5 -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">How do you test a debugger?</h2>
+        <p>A debugger is something a person types into. To check it automatically, the project records a session that is known to be correct, then replays the same keystrokes after every change and compares the two transcripts. This is a <span class="term" data-definition="A regression test checks that something which used to work still works after a change. A 'regression' is when a new change accidentally breaks an old feature.">regression test</span>.</p>
+
+        <div class="flow-steps">
+          <div class="flow-step">
+            <div class="flow-step-num">1</div>
+            <p>Build a small test program with cobcd</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">2</div>
+            <p>Run GDB with a script of commands, no human</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">3</div>
+            <p>Strip out the bits that always differ</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">4</div>
+            <p>Compare with the known-good transcript</p>
+          </div>
+        </div>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">tests/test001/Makefile</span>
+            <pre><code><span class="code-line"><span class="code-function">test</span>:</span><span class="code-line">	COBCDEVEL<span class="code-operator">=</span><span class="code-number">1</span> COBCDFMODE<span class="code-operator">=</span><span class="code-property">$(FMODE)</span> <span class="code-property">$(COBCD)</span> -x test.cbl</span><span class="code-line">	CPRINT_RAISE<span class="code-operator">=</span><span class="code-number">0</span> COBCDRW<span class="code-operator">=</span><span class="code-property">$(COBCDRW)</span> <span class="code-property">$(GDB)</span> --batch <span class="code-property">$(PYTHON_SOURCE)</span> -x test.gdb <span class="code-operator">&gt;</span> under-test.txt</span><span class="code-line">	<span class="code-property">$(PYTHON)</span> ../strip-diff under-test.txt <span class="code-operator">&gt;</span>under-test.stripped</span><span class="code-line">	diff -uw <span class="code-property">$(knowngood)</span>.stripped under-test.stripped</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">This is the recipe for "make test" in one test folder.</p>
+              <p class="tl">Build the test program using the crew straight from the project folder (the development switch from Module 2).</p>
+              <p class="tl">Run GDB with nobody at the keyboard. Feed it the commands in test.gdb and save everything it prints.</p>
+              <p class="tl">Remove the parts that are different on every run: process numbers, memory addresses and the like.</p>
+              <p class="tl">Compare what is left with the saved known-good version. Any difference at all counts as a failure.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">📸</div>
+          <div class="callout-content">
+            <strong class="callout-title">Pattern worth stealing: golden-file testing</strong>
+            <p>"Save the correct output once, then compare against it forever" works for anything that produces text: reports, exports, generated code. Ask for it by name: "add a golden-file test for this output". The step that removes harmless differences is the part that takes care to get right.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 6: SPOT THE BUG -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Your turn: read like a reviewer</h2>
+        <p>In Module 4 you read the packed-number decoder, which sets <code>is_negative = True</code> when it meets a minus sign. This is its sibling from the same file, for numbers stored as text. It is real, current code. Click the line that cannot be doing what its author meant.</p>
+
+        <div class="bug-challenge">
+          <h3>cobcd.py, GetIntegerNumericDisplay</h3>
+          <div class="bug-code">
+            <div class="bug-line" data-line="1" onclick="checkBugLine(this, false)" data-hint="That is a sensible starting assumption: not negative until proven otherwise. Look at what happens when proof arrives.">
+              <span class="line-num">1</span>
+              <code>  is_negative = False</code>
+            </div>
+            <div class="bug-line" data-line="2" onclick="checkBugLine(this, false)" data-hint="Starting the total at zero is fine. Keep looking.">
+              <span class="line-num">2</span>
+              <code>  value = 0;</code>
+            </div>
+            <div class="bug-line" data-line="3" onclick="checkBugLine(this, false)" data-hint="Just the loop over each byte. The trouble is inside it.">
+              <span class="line-num">3</span>
+              <code>  for digit in digits:</code>
+            </div>
+            <div class="bug-line" data-line="4" onclick="checkBugLine(this, false)" data-hint="A plus sign needs no action, so skipping it is right. What about the other sign?">
+              <span class="line-num">4</span>
+              <code>    if digit == '+':</code>
+            </div>
+            <div class="bug-line" data-line="5" onclick="checkBugLine(this, false)" data-hint="Skipping to the next byte is fine here.">
+              <span class="line-num">5</span>
+              <code>      continue</code>
+            </div>
+            <div class="bug-line" data-line="6" onclick="checkBugLine(this, false)" data-hint="Close. This line correctly notices a minus sign. Look at what the NEXT line does about it.">
+              <span class="line-num">6</span>
+              <code>    if digit == '-':</code>
+            </div>
+            <div class="bug-line bug-target" data-line="7" onclick="checkBugLine(this, true)" data-explanation="A minus sign has just been found, and the code responds by setting is_negative to 0, which means False. It was already False, so nothing changes (line 10 has the same slip). This function can never report a negative number. Nobody noticed because it is only used for lengths and table positions, which are never negative: a latent bug, waiting for someone to reuse the function.">
+              <span class="line-num">7</span>
+              <code>      is_negative = 0</code>
+            </div>
+            <div class="bug-line" data-line="8" onclick="checkBugLine(this, false)" data-hint="Moving on to the next byte is fine.">
+              <span class="line-num">8</span>
+              <code>      continue</code>
+            </div>
+            <div class="bug-line" data-line="9" onclick="checkBugLine(this, false)" data-hint="This is a second way COBOL marks a negative: a flag hidden inside a digit. Detecting it is correct. What happens next?">
+              <span class="line-num">9</span>
+              <code>    if digit &amp; 0x40:</code>
+            </div>
+            <div class="bug-line bug-target" data-line="10" onclick="checkBugLine(this, true)" data-explanation="A negative marker has just been detected, and the code responds by setting is_negative to 0, which means False. It was already False, so nothing changes (line 7 has the same slip). This function can never report a negative number. Nobody noticed because it is only used for lengths and table positions, which are never negative: a latent bug, waiting for someone to reuse the function.">
+              <span class="line-num">10</span>
+              <code>      is_negative = 0</code>
+            </div>
+            <div class="bug-line" data-line="11" onclick="checkBugLine(this, false)" data-hint="This is the same shift-left-and-add you saw in Module 4. It is fine.">
+              <span class="line-num">11</span>
+              <code>    value *= 10</code>
+            </div>
+            <div class="bug-line" data-line="12" onclick="checkBugLine(this, false)" data-hint="This keeps just the digit part of the byte. It is fine.">
+              <span class="line-num">12</span>
+              <code>    value += digit &amp; 0x0F</code>
+            </div>
+            <div class="bug-line" data-line="13" onclick="checkBugLine(this, false)" data-hint="This line is right, but ask yourself: can is_negative ever be True by the time we get here?">
+              <span class="line-num">13</span>
+              <code>  if is_negative:</code>
+            </div>
+            <div class="bug-line" data-line="14" onclick="checkBugLine(this, false)" data-hint="Adding the minus sign is what we want. The question is whether this line can ever be reached.">
+              <span class="line-num">14</span>
+              <code>    retval = "-"</code>
+            </div>
+          </div>
+          <div class="bug-feedback"></div>
+        </div>
+
+        <p>You found that without running anything, just by comparing a name (<code>is_negative</code>) with what the code does to it. That is exactly the skill for reviewing AI-written code: you don't need to write it, you need to notice when what it says and what it does disagree.</p>
+      </section>
+
+      <!-- SCREEN 7: RECAP -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The whole machine on one page</h2>
+
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:var(--space-4); margin: var(--space-6) 0;">
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+            <h4 class="pattern-title">🔨 Build time</h4>
+            <p class="pattern-desc"><strong>cobcd</strong> wraps <strong>cobc</strong> and asks for its plan.</p>
+            <p class="pattern-desc"><strong>cobcd-st</strong> staples a table of every COBOL variable into the C.</p>
+            <p class="pattern-desc"><strong>cobcd-sfix</strong> makes the line notes point at the COBOL.</p>
+            <p class="pattern-desc">A hint is left so GDB can find <strong>cobcd.py</strong>.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-4)">
+            <h4 class="pattern-title">🔍 Debug time</h4>
+            <p class="pattern-desc">GDB follows the hint and loads <strong>cobcd.py</strong>.</p>
+            <p class="pattern-desc">The script registers <code>cprint</code>, <code>cbreak</code>, <code>cwatch</code>...</p>
+            <p class="pattern-desc">On first use it reads the table out of the program's own memory.</p>
+            <p class="pattern-desc">Each request: find the card, fetch the bytes, decode by type.</p>
+          </div>
+        </div>
+
+        <p>And the vocabulary you now own. Each of these is a phrase you can put directly into an instruction to an AI coding assistant:</p>
+
+        <div class="pattern-cards stagger-children">
+          <div class="pattern-card animate-in">
+            <h4 class="pattern-title">Wrapper</h4>
+            <p class="pattern-desc">"Don't modify the tool. Write a wrapper script around it."</p>
+          </div>
+          <div class="pattern-card animate-in">
+            <h4 class="pattern-title">Dry run</h4>
+            <p class="pattern-desc">"Add a dry-run flag that prints what it would do."</p>
+          </div>
+          <div class="pattern-card animate-in">
+            <h4 class="pattern-title">Plugin API</h4>
+            <p class="pattern-desc">"Use the tool's official extension API, not a patched copy."</p>
+          </div>
+          <div class="pattern-card animate-in">
+            <h4 class="pattern-title">Data contract</h4>
+            <p class="pattern-desc">"You changed the writer. Update the reader and test both together."</p>
+          </div>
+          <div class="pattern-card animate-in">
+            <h4 class="pattern-title">Cache invalidation</h4>
+            <p class="pattern-desc">"You added a cache. What clears it, and when?"</p>
+          </div>
+          <div class="pattern-card animate-in">
+            <h4 class="pattern-title">Graceful fallback</h4>
+            <p class="pattern-desc">"If this step fails, fall back to the plain behaviour."</p>
+          </div>
+          <div class="pattern-card animate-in">
+            <h4 class="pattern-title">Idempotent</h4>
+            <p class="pattern-desc">"Make this safe to run twice."</p>
+          </div>
+          <div class="pattern-card animate-in">
+            <h4 class="pattern-title">Golden-file test</h4>
+            <p class="pattern-desc">"Save the known-good output and compare against it."</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- QUIZ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Final check</h2>
+        <div class="quiz-container" id="quiz-module5">
+
+          <div class="quiz-question-block"
+               data-correct="b"
+               data-explanation-right="That banner is the escalator turning into stairs. The clever route failed (because of the COBOL error), so cobcd ran plain cobc, which gave you the compiler's normal message. Fix the COBOL; the tooling is behaving as designed."
+               data-explanation-wrong="The banner is not a crash report. It is cobcd announcing its fallback: the special route failed, so it ran the ordinary compiler instead, and the ordinary compiler told you about a mistake in your COBOL.">
+            <h3 class="quiz-question">A build prints <em>#### Ordinary compile due to thrown exception</em>, followed by a normal-looking error about line 58 of your COBOL. What happened?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>cbl-gdb has crashed and needs reinstalling</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>cobcd's special route failed, so it fell back to plain cobc, which is reporting a mistake in your COBOL</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The program was built successfully but without debugging support</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="c"
+               data-explanation-right="Scar-tissue code looks useless out of context. The comment is the only record of why it exists, and the regression tests are the only proof of whether it still matters. Use both before agreeing to a clean-up."
+               data-explanation-wrong="The code looks pointless precisely because the reason for it lives outside the code: in a comment about a specific GnuCOBOL version. Read the reason, then let the tests tell you whether removal is safe.">
+            <h3 class="quiz-question">An AI assistant reviewing sfix.cpp says: "This block that flips <code>is_stmt 0</code> to <code>1</code> is an unexplained hack. I'll remove it to simplify the code." What is your best response?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>"Good catch, simpler is always better."</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>"Leave it. Never change anything in that file."</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>"Read the comment above it first. If you still want it gone, run the regression tests before and after on GnuCOBOL 3.2."</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="a"
+               data-explanation-right="A golden-file test cannot tell 'broken' from 'deliberately changed'; it only says 'different'. A human reads the differences. If they are what you intended, you re-record the known-good files on purpose. If not, you just caught a bug before anyone else did."
+               data-explanation-wrong="The comparison only knows that output changed, not whether the change is good. Deleting or ignoring the tests throws away the one tool that can tell you. Read the differences, then decide.">
+            <h3 class="quiz-question">You change how <code>cprint</code> lays out its output. Now <code>make test</code> reports differences in a dozen test folders. What does that mean, and what do you do?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The output no longer matches the saved transcripts. Read each difference: if it is the change you intended, re-record the known-good files; if not, you found a bug</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The tests are out of date, so delete them</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Formatting changes can't break anything, so ignore the report</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="b"
+               data-explanation-right="Two files, one from just before the suspect and one from just after, turn 'something is wrong somewhere' into a direct comparison. Keeping the in-between files is the first move in debugging any multi-step pipeline."
+               data-explanation-wrong="Timing and reinstalling don't show you the evidence. The question is 'what did the Editor change?', and the direct way to answer it is to keep the assembly from before and after and compare them.">
+            <h3 class="quiz-question">Breakpoints are landing a line or two away from where you set them, and you suspect the Editor. Which approach gets you evidence fastest?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Run with <code>SHOW_TIME=1</code> to see which stage is slowest</span>
+              </button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Run with <code>SAVE_S=1 COBCDNOCLEAN=1</code> and compare the assembly from before and after cobcd-sfix</span>
+              </button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Ask the AI to rewrite cobcd-sfix from scratch</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module5')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module5')">Try Again</button>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>
+  </main>
+
+</body>
+</html>

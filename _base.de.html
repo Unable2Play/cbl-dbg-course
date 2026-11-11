@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cbl-gdb von innen: Wie GDB COBOL lernt</title>
+
+  <!-- Google Fonts: Bricolage Grotesque · DM Sans · JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700;12..96,800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400;1,9..40,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="styles.css">
+
+  <!--
+    CUSTOMIZE PER COURSE — change only the three accent variables below.
+    Options:
+      vermillion  #D94F30 / #C4432A / #FDEEE9 / #E8836C  (default)
+      coral       #E06B56 / #C85A47 / #FDECEA / #E89585
+      teal        #2A7B9B / #1F6280 / #E4F2F7 / #5A9DB8
+      amber       #D4A843 / #BF9530 / #FDF5E0 / #E0C070
+      forest      #2D8B55 / #226B41 / #E8F5EE / #5AAD7A
+  -->
+  <style>
+    :root {
+      --color-accent:       #2A7B9B;
+      --color-accent-hover: #1F6280;
+      --color-accent-light: #E4F2F7;
+      --color-accent-muted: #5A9DB8;
+    }
+    /* Language switch (EN / DE) */
+    .nav-right { display: flex; align-items: center; gap: var(--space-4); }
+    .lang-switch {
+      display: inline-flex;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-full);
+      overflow: hidden;
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .lang-opt {
+      padding: 3px 10px;
+      color: var(--color-text-secondary);
+      text-decoration: none;
+      letter-spacing: 0.05em;
+      transition: background var(--duration-fast), color var(--duration-fast);
+    }
+    .lang-opt:hover { color: var(--color-accent); }
+    .lang-opt.active { background: var(--color-accent); color: white; cursor: default; }
+  </style>
+
+  <script src="main.js" defer></script>
+  <script>
+    // Language switch: stay on the module you are reading.
+    document.addEventListener('click', function (e) {
+      var link = e.target.closest ? e.target.closest('.lang-opt') : null;
+      if (!link) return;
+      if (link.classList.contains('active')) { e.preventDefault(); return; }
+      var dot = document.querySelector('.nav-dot.active');
+      if (dot) { e.preventDefault(); location.href = link.getAttribute('href') + '#' + dot.dataset.target; }
+    });
+  </script>
+</head>
+<body>
+
+  <nav class="nav" id="nav">
+    <div class="progress-bar" id="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+    <div class="nav-inner">
+      <span class="nav-title">cbl-gdb von innen: Wie GDB COBOL lernt</span>
+      <div class="nav-right">
+        <div class="nav-dots" id="nav-dots" role="tablist">
+          <!--
+            One <button> per module. Replace MODULE_N_NAME with the actual module title.
+  
+            <button class="nav-dot" data-target="module-1" data-tooltip="MODULE_1_NAME" role="tab" aria-label="Module 1: MODULE_1_NAME"></button>
+            <button class="nav-dot" data-target="module-2" data-tooltip="MODULE_2_NAME" role="tab" aria-label="Module 2: MODULE_2_NAME"></button>
+            ...
+          -->
+          <button class="nav-dot" data-target="module-1" data-tooltip="Ein Wort ändert alles" role="tab" aria-label="Modul 1: Ein Wort ändert alles"></button>
+          <button class="nav-dot" data-target="module-2" data-tooltip="Die Crew" role="tab" aria-label="Modul 2: Die Crew"></button>
+          <button class="nav-dot" data-target="module-3" data-tooltip="Der Roadtrip von COBOL zur Maschine" role="tab" aria-label="Modul 3: Der Roadtrip von COBOL zur Maschine"></button>
+          <button class="nav-dot" data-target="module-4" data-tooltip="Im Inneren des Debuggers" role="tab" aria-label="Modul 4: Im Inneren des Debuggers"></button>
+          <button class="nav-dot" data-target="module-5" data-tooltip="Wenn etwas schiefgeht" role="tab" aria-label="Modul 5: Wenn etwas schiefgeht"></button>
+        </div>
+        <div class="lang-switch" role="group" aria-label="Sprache">
+          <a class="lang-opt" href="index.html" lang="en" hreflang="en">EN</a>
+          <a class="lang-opt active" href="index.de.html" lang="de" hreflang="de" aria-current="true">DE</a>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <main id="main">
+    <!-- modules/*.html content is assembled here by build.sh -->
