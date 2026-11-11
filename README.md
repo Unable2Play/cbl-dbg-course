@@ -1,1 +1,1 @@
-# unable2play.github.io-cbl-dbg-course
+# unable2play.github.io/cbl-dbg-course
