@@ -1,1 +1,1 @@
-# unable2play.github.io/cbl-dbg-course
+# Course for better understanding of the cbl-dbg extension for GNU debugger
